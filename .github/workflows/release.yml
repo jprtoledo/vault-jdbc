@@ -63,4 +63,5 @@ jobs:
 
       - name: Maven Central not configured
         if: env.CENTRAL_CONFIGURED != 'true'
-        run: echo "::notice::Skipped Maven Central: set CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY and GPG_PASSPHRASE secrets"
+        run: |
+          echo "::notice::Skipped Maven Central. Set the CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY and GPG_PASSPHRASE secrets to publish."
