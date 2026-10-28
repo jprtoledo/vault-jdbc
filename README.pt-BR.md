@@ -87,7 +87,8 @@ Use `vault.role` ou `vault.path`, não os dois.
 | `vault.autoLogin` | `true` quando há `vault.method` | Se deve rodar o `vault login` quando o token não existe ou é recusado. Nunca roda no método `token`, que precisa de um terminal para pedir o token |
 | `vault.loginTimeout` | `120` | Segundos de espera pelo `vault login`, ou seja, o tempo que você tem para concluir o login no navegador |
 | `vault.cli` | detectado | Caminho do binário `vault`. É procurado no `PATH` e depois em `/opt/homebrew/bin`, `/usr/local/bin` e `/usr/bin` |
-| `vault.tokenFile` | `~/.vault-token` | Arquivo de onde ler o token. Se você não definir, o `VAULT_TOKEN` tem prioridade, como na CLI |
+| `vault.tokenDir` | `VAULT_JDBC_TOKEN_DIR` ou `~/.vault-tokens` | Pasta com um arquivo de token por servidor Vault (veja [Vários servidores Vault](#vários-servidores-vault)) |
+| `vault.tokenFile` | `~/.vault-token` | Arquivo de token compartilhado do `vault login`, usado depois do arquivo do servidor |
 
 ### Driver real
 
@@ -120,11 +121,11 @@ exemplo, um jar de driver que você configurou ao lado do vault-jdbc); um driver
 baixando se for preciso; e, por último, qualquer driver registrado que aceite a URL. Um jar baixado só é
 usado se o SHA-256 bater. Se um jar do cache deixar de bater, ele é baixado de novo.
 
-**Token do Vault.** A ordem é: o token do último login automático neste processo, o `VAULT_TOKEN` e o
-arquivo de token. Se o Vault responder 401 ou 403, o arquivo é lido de novo, porque você pode ter logado
-pelo terminal. Só depois disso o driver roda o `vault login`, se permitido. Só um login acontece por vez
-para cada servidor Vault; as outras conexões esperam e reaproveitam o token. A CLI salva o token novo como
-de costume, então o seu terminal também passa a usá-lo.
+**Token do Vault.** A ordem é: o token que funcionou por último para aquele servidor neste processo, o
+`VAULT_TOKEN`, o arquivo do próprio servidor em `~/.vault-tokens/` e o `~/.vault-token` compartilhado. Vale
+o primeiro que o Vault aceitar. Se o Vault recusar todos, o driver roda `vault login -no-store` (se
+permitido) e grava o token novo no arquivo do servidor. Só um login acontece por vez para cada servidor
+Vault; as outras conexões esperam e reaproveitam o token.
 
 **Credenciais.** Todas as conexões para o mesmo segredo compartilham uma credencial, então um pool de
 conexões não cria um usuário de banco por conexão. Uma credencial nova é buscada quando faltam 20% da lease
@@ -141,8 +142,33 @@ banco normalmente as derruba, e a próxima conexão já sai com credencial nova.
 **Usernames.** Os espaços em volta do username são removidos, porque algumas configurações de
 `username_template` adicionam uma quebra de linha no fim que não faz parte do usuário do banco.
 
+## Vários servidores Vault
+
+A CLI `vault` guarda um único token em `~/.vault-token`, então logar num segundo servidor substitui o
+token do primeiro. O vault-jdbc evita isso guardando um arquivo de token por servidor em `~/.vault-tokens/`
+(com o nome tirado do endereço, ex.: `https___vault-a.exemplo.com`). Os logins automáticos dele nunca
+mexem no `~/.vault-token`.
+
+Para o terminal funcionar do mesmo jeito, instale o [token helper](contrib/vault-token-helper.sh) que vem
+no projeto. Ele guarda os tokens da CLI nos mesmos arquivos, separados por `VAULT_ADDR`:
+
+```bash
+curl -fsSL -o ~/.vault-token-helper.sh https://raw.githubusercontent.com/jprtoledo/vault-jdbc/main/contrib/vault-token-helper.sh
+chmod +x ~/.vault-token-helper.sh
+echo "token_helper = \"$HOME/.vault-token-helper.sh\"" >> ~/.vault
+
+VAULT_ADDR=https://vault-a.exemplo.com vault login -method=oidc
+VAULT_ADDR=https://vault-b.exemplo.com vault login -method=oidc   # o token de A continua lá
+```
+
+A partir daí, trocar o `VAULT_ADDR` troca o token, no terminal e no vault-jdbc. Escolha o servidor pelo
+`VAULT_ADDR`, não pela flag `-address`: a CLI não repassa o `-address` para o token helper. Com o helper
+instalado, a CLI deixa de gravar o `~/.vault-token`.
+
 ## Segurança
 
+- Os arquivos de token são gravados de forma atômica e só você consegue ler (`600`, numa pasta `700`),
+  como o `~/.vault-token` da CLI.
 - Senhas e tokens nunca aparecem em log nem em mensagem de erro. Valores sensíveis em `vault.loginArgs`
   (`password`, `secret`, `token`, `passcode`…) são mascarados.
 - A verificação de certificado e de hostname do TLS não pode ser desligada. Para confiar numa CA privada

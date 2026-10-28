@@ -16,10 +16,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 /**
- * Runs {@code vault login -method=<m> -path=<p> [k=v...]} the way a user would, so browser-based methods
- * such as OIDC pop up the identity provider. The CLI still stores the token through its token helper
- * (normally ~/.vault-token), and the token is also read from its JSON output so this process can use it
- * even with a custom vault.tokenFile or a stale VAULT_TOKEN.
+ * Runs {@code vault login -no-store -method=<m> -path=<p> [k=v...]} the way a user would, so browser-based
+ * methods such as OIDC pop up the identity provider. The token is read from the JSON output instead of
+ * being stored by the CLI, so logging in to one Vault server does not overwrite another server's token.
  */
 class VaultLogin {
     private static final Logger LOG = Logger.getLogger(VaultLogin.class.getName());
@@ -32,6 +31,9 @@ class VaultLogin {
         command.add(resolveCli(config));
         command.add("login");
         command.add("-format=json");
+        // Do not overwrite ~/.vault-token (or a token helper) with this server's token; VaultClient saves
+        // it to the per-server token file instead.
+        command.add("-no-store");
         command.add("-method=" + config.method);
         command.add("-path=" + config.authPath);
         command.addAll(config.loginArgs);

@@ -7,27 +7,37 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
- * Reads a credential from Vault over HTTPS. The token comes from the last login done by this process,
- * then VAULT_TOKEN, then the token file left by {@code vault login}. When Vault rejects it, the token file
- * is re-read (the user may have logged in from a terminal) and, if allowed, {@code vault login} is run.
+ * Reads a credential from Vault over HTTPS. Tokens are tried in this order: the one that last worked for this
+ * server in this process, VAULT_TOKEN, the per-server token file (~/.vault-tokens/...), and the shared
+ * ~/.vault-token left by {@code vault login}. If Vault rejects all of them and auto-login is allowed,
+ * {@code vault login -no-store} is run and its token saved to the per-server file, so logging in to one
+ * server never overwrites the token of another.
  */
 class VaultClient {
+    private static final Logger LOG = Logger.getLogger(VaultClient.class.getName());
     private static final Duration TIMEOUT = Duration.ofSeconds(15);
 
     private final VaultLogin login;
     private final Map<String, HttpClient> clients = new ConcurrentHashMap<>();
-    /** Tokens obtained by auto-login, per Vault server. */
-    private final Map<String, String> loginTokens = new ConcurrentHashMap<>();
+    /** Token that last worked, per Vault server. */
+    private final Map<String, String> knownTokens = new ConcurrentHashMap<>();
     private final Map<String, Object> loginLocks = new ConcurrentHashMap<>();
 
     VaultClient(VaultLogin login) {
@@ -35,44 +45,87 @@ class VaultClient {
     }
 
     Credential read(VaultConfig config) throws SQLException {
-        String token = loginTokens.get(config.serverKey());
-        if (token == null) {
-            token = config.envToken != null ? config.envToken : readTokenFile(config);
-        }
-        VaultAuthException rejected;
-        try {
-            return fetch(config, requireToken(token, config));
-        } catch (VaultAuthException e) {
-            rejected = e;
-        }
-
-        String fileToken = readTokenFile(config);
-        if (fileToken != null && !fileToken.equals(token)) {
+        String known = knownTokens.get(config.serverKey());
+        VaultAuthException rejected = null;
+        for (String token : candidateTokens(config, known)) {
             try {
-                Credential credential = fetch(config, fileToken);
-                loginTokens.put(config.serverKey(), fileToken);
+                Credential credential = fetch(config, token);
+                knownTokens.put(config.serverKey(), token);
                 return credential;
-            } catch (VaultAuthException ignored) {
-                // stale as well; fall through to login
+            } catch (VaultAuthException e) {
+                if (rejected == null) {
+                    rejected = e;
+                }
             }
+        }
+        if (rejected == null) {
+            rejected = new VaultAuthException("No Vault token for " + config.addr + " (looked in VAULT_TOKEN, "
+                + config.serverTokenFile() + " and " + config.tokenFile + "); run: " + config.loginCommand());
         }
         if (!config.autoLogin) {
             throw rejected;
         }
-        return fetch(config, loginOnce(config, token));
+        return fetch(config, loginOnce(config, known));
+    }
+
+    private static Set<String> candidateTokens(VaultConfig config, String known) throws SQLException {
+        Set<String> tokens = new LinkedHashSet<>();
+        addIfPresent(tokens, known);
+        addIfPresent(tokens, config.envToken);
+        addIfPresent(tokens, readTokenFile(config.serverTokenFile()));
+        addIfPresent(tokens, readTokenFile(config.tokenFile));
+        return tokens;
+    }
+
+    private static void addIfPresent(Set<String> tokens, String token) {
+        if (token != null) {
+            tokens.add(token);
+        }
     }
 
     /** One login at a time per server; a caller that waited reuses the token the previous login produced. */
     private String loginOnce(VaultConfig config, String rejectedToken) throws SQLException {
         Object lock = loginLocks.computeIfAbsent(config.serverKey(), key -> new Object());
         synchronized (lock) {
-            String current = loginTokens.get(config.serverKey());
+            String current = knownTokens.get(config.serverKey());
             if (current != null && !current.equals(rejectedToken)) {
                 return current;
             }
             String token = login.login(config);
-            loginTokens.put(config.serverKey(), token);
+            knownTokens.put(config.serverKey(), token);
+            try {
+                writeTokenFile(config.serverTokenFile(), token);
+            } catch (IOException e) {
+                // The token still works for this process; only reuse after a restart is lost.
+                LOG.warning(() -> "Could not save Vault token to " + config.serverTokenFile() + ": " + e.getMessage());
+            }
             return token;
+        }
+    }
+
+    /** Writes the token with owner-only permissions, atomically, like the vault CLI does for ~/.vault-token. */
+    static void writeTokenFile(Path file, String token) throws IOException {
+        Path dir = file.toAbsolutePath().getParent();
+        boolean posix = dir.getFileSystem().supportedFileAttributeViews().contains("posix");
+        if (!Files.isDirectory(dir)) {
+            if (posix) {
+                Files.createDirectories(dir, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+            } else {
+                Files.createDirectories(dir);
+            }
+        }
+        Path temp = posix
+            ? Files.createTempFile(dir, ".token", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            : Files.createTempFile(dir, ".token", ".tmp");
+        try {
+            Files.writeString(temp, token, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
         }
     }
 
@@ -136,21 +189,14 @@ class VaultClient {
             leaseId instanceof String ? (String) leaseId : "", leaseSeconds, 0L);
     }
 
-    private static String requireToken(String token, VaultConfig config) throws VaultAuthException {
-        if (token == null) {
-            throw new VaultAuthException("No Vault token: " + config.tokenFile + " not found or empty; run: " + config.loginCommand());
-        }
-        return token;
-    }
-
-    private static String readTokenFile(VaultConfig config) throws SQLException {
+    private static String readTokenFile(Path file) throws SQLException {
         try {
-            String token = Files.readString(config.tokenFile, StandardCharsets.UTF_8).trim();
+            String token = Files.readString(file, StandardCharsets.UTF_8).trim();
             return token.isEmpty() ? null : token;
         } catch (NoSuchFileException e) {
             return null;
         } catch (IOException e) {
-            throw new SQLException("Could not read Vault token file " + config.tokenFile + ": " + e.getMessage(), e);
+            throw new SQLException("Could not read Vault token file " + file + ": " + e.getMessage(), e);
         }
     }
 

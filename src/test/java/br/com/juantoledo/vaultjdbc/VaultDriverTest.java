@@ -440,7 +440,7 @@ class VaultDriverTest {
             + "&vault.loginArgs=role%3Ddba,skip_browser%3Dfalse&vault.cli=" + cli, new Properties()), env::get);
 
         assertEquals("cli-token", new VaultLogin().login(config));
-        assertEquals(List.of("login", "-format=json", "-method=oidc", "-path=okta_oidc", "role=dba", "skip_browser=false",
+        assertEquals(List.of("login", "-format=json", "-no-store", "-method=oidc", "-path=okta_oidc", "role=dba", "skip_browser=false",
             "VAULT_ADDR=" + config.addr, "VAULT_TOKEN=unset"), Files.readAllLines(argsFile));
     }
 

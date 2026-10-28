@@ -31,6 +31,7 @@ final class VaultConfig {
     final String namespace;
     final Path caCert;
     final Path tokenFile;
+    final Path tokenDir;
     final String envToken;
     final String usernameKey;
     final String passwordKey;
@@ -49,6 +50,7 @@ final class VaultConfig {
         this.namespace = b.namespace;
         this.caCert = b.caCert;
         this.tokenFile = b.tokenFile;
+        this.tokenDir = b.tokenDir;
         this.envToken = b.envToken;
         this.usernameKey = b.usernameKey;
         this.passwordKey = b.passwordKey;
@@ -82,6 +84,7 @@ final class VaultConfig {
         b.caCert = caCert == null ? null : expandHome(caCert, env);
         String tokenFile = url.option("tokenFile");
         b.tokenFile = expandHome(tokenFile == null ? "~/.vault-token" : tokenFile, env);
+        b.tokenDir = expandHome(firstNonBlank(url.option("tokenDir"), firstNonBlank(env.apply("VAULT_JDBC_TOKEN_DIR"), "~/.vault-tokens")), env);
         // An explicit token file wins; otherwise behave like the vault CLI (VAULT_TOKEN over the file).
         b.envToken = tokenFile == null ? blankToNull(env.apply("VAULT_TOKEN")) : null;
         b.usernameKey = firstNonBlank(url.option("usernameKey"), "username");
@@ -165,6 +168,16 @@ final class VaultConfig {
         return String.join("|", serverKey(), secretPath);
     }
 
+    /**
+     * Per-server token file, so tokens for different Vault servers do not overwrite each other in ~/.vault-token.
+     * The name must match contrib/vault-token-helper.sh: the address without trailing slashes, plus "|namespace"
+     * when set, with every character outside [A-Za-z0-9._-] replaced by '_'.
+     */
+    Path serverTokenFile() {
+        String key = addr.toString() + (namespace == null ? "" : "|" + namespace);
+        return tokenDir.resolve(key.replaceAll("[^A-Za-z0-9._-]", "_"));
+    }
+
     /** Identifies a Vault server (and namespace) for token reuse. */
     String serverKey() {
         return String.join("|", addr.toString(), Objects.toString(namespace, ""));
@@ -240,6 +253,7 @@ final class VaultConfig {
         String namespace;
         Path caCert;
         Path tokenFile;
+        Path tokenDir;
         String envToken;
         String usernameKey;
         String passwordKey;

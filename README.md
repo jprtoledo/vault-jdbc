@@ -86,7 +86,8 @@ Set either `vault.role` or `vault.path`, not both.
 | `vault.autoLogin` | `true` when `vault.method` is set | Whether to run `vault login` when the token is missing or rejected. It never runs for the `token` method, which needs a terminal prompt |
 | `vault.loginTimeout` | `120` | Seconds to wait for `vault login`, i.e. the time you have to finish the browser flow |
 | `vault.cli` | auto-detected | Path to the `vault` binary. Looked up on `PATH`, then in `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin` |
-| `vault.tokenFile` | `~/.vault-token` | Token file to read. If you don't set it, `VAULT_TOKEN` takes precedence, as in the CLI |
+| `vault.tokenDir` | `VAULT_JDBC_TOKEN_DIR` or `~/.vault-tokens` | Folder with one token file per Vault server (see [Multiple Vault servers](#multiple-vault-servers)) |
+| `vault.tokenFile` | `~/.vault-token` | Shared token file left by `vault login`, tried after the per-server file |
 
 ### Real driver
 
@@ -119,11 +120,11 @@ example, a driver jar you configured next to vault-jdbc); a managed driver from 
 if needed; and finally any registered driver that accepts the URL. A downloaded jar is used only if its
 SHA-256 matches. A cached jar that no longer matches is downloaded again.
 
-**Vault token.** It tries, in order: the token from the last automatic login in this process,
-`VAULT_TOKEN`, and the token file. If Vault answers 401 or 403, it reads the token file again, since you
-may have logged in from a terminal. Only then does it run `vault login`, if allowed. Only one login runs at
-a time per Vault server, and other connections wait for it and reuse its token. The CLI saves the new token
-as usual, so your terminal sees it too.
+**Vault token.** It tries, in order: the token that last worked for that server in this process,
+`VAULT_TOKEN`, the server's own file in `~/.vault-tokens/`, and the shared `~/.vault-token`. The first one
+Vault accepts is used. If Vault rejects all of them, it runs `vault login -no-store` (when allowed) and saves
+the new token to the server's file. Only one login runs at a time per Vault server, and other connections
+wait for it and reuse its token.
 
 **Credentials.** All connections to the same secret share one credential, so a connection pool does not
 create one database user per connection. A new credential is fetched once 20% of the lease is left (at
@@ -139,8 +140,34 @@ database usually drops them, and the next connection gets a fresh credential.
 **Usernames.** Whitespace around usernames is removed, because some `username_template` configurations
 add a trailing newline that is not part of the database user.
 
+## Multiple Vault servers
+
+The `vault` CLI keeps a single token in `~/.vault-token`, so logging in to a second server replaces the
+first server's token. vault-jdbc avoids this by keeping one token file per server in `~/.vault-tokens/`
+(named after the address, e.g. `https___vault-a.example.com`). Its own automatic logins never touch
+`~/.vault-token`.
+
+To make the terminal work the same way, install the included
+[token helper](contrib/vault-token-helper.sh). It stores CLI tokens in the same files, keyed by
+`VAULT_ADDR`:
+
+```bash
+curl -fsSL -o ~/.vault-token-helper.sh https://raw.githubusercontent.com/jprtoledo/vault-jdbc/main/contrib/vault-token-helper.sh
+chmod +x ~/.vault-token-helper.sh
+echo "token_helper = \"$HOME/.vault-token-helper.sh\"" >> ~/.vault
+
+VAULT_ADDR=https://vault-a.example.com vault login -method=oidc
+VAULT_ADDR=https://vault-b.example.com vault login -method=oidc   # A's token is kept
+```
+
+From then on, switching `VAULT_ADDR` switches the token, in the terminal and in vault-jdbc. Select the
+server with `VAULT_ADDR`, not `-address`: the CLI does not pass `-address` to token helpers. With the helper
+installed, the CLI no longer writes `~/.vault-token`.
+
 ## Security
 
+- Token files are written atomically and readable only by you (`600`, in a `700` folder), like the CLI's
+  `~/.vault-token`.
 - Passwords and tokens never appear in logs or error messages. Sensitive `vault.loginArgs` values
   (`password`, `secret`, `token`, `passcode`, …) are masked.
 - TLS certificate and hostname verification cannot be turned off. To trust a private CA or a
