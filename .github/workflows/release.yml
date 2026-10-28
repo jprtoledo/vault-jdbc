@@ -1,0 +1,66 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching <version> in pom.xml) to build, create the GitHub release with the jars
+# and, when the Central secrets are configured, publish to Maven Central.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CENTRAL_CONFIGURED: ${{ secrets.CENTRAL_USERNAME != '' && secrets.GPG_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Check tag matches pom version
+        run: |
+          version=$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pom version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: mvn -B -Prelease -Dgpg.skip verify
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target
+          sha256sum "vault-jdbc-$VERSION.jar" > "vault-jdbc-$VERSION.jar.sha256"
+          files="vault-jdbc-$VERSION.jar vault-jdbc-$VERSION.jar.sha256 vault-jdbc-$VERSION-sources.jar vault-jdbc-$VERSION-javadoc.jar"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $files --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" $files --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
+      - name: Publish to Maven Central
+        if: env.CENTRAL_CONFIGURED == 'true'
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: mvn -B -Prelease -DskipTests deploy
+
+      - name: Maven Central not configured
+        if: env.CENTRAL_CONFIGURED != 'true'
+        run: echo "::notice::Skipped Maven Central: set CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY and GPG_PASSPHRASE secrets"

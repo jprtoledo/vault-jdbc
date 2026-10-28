@@ -158,6 +158,19 @@ mvn verify
 
 The tests use an in-process fake Vault and a fake driver, so they need no Docker and no network.
 
+### Releasing
+
+Set `<version>` in `pom.xml`, commit, and push a matching tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The [release workflow](.github/workflows/release.yml) runs the tests, creates the GitHub release with the
+jars and their SHA-256, and publishes to Maven Central when these repository secrets are set:
+`CENTRAL_USERNAME` and `CENTRAL_PASSWORD` (a [Central Portal](https://central.sonatype.com) user token),
+`GPG_PRIVATE_KEY` (ASCII-armored) and `GPG_PASSPHRASE`.
+
 ## License
 
 [MIT](LICENSE)
