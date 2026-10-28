@@ -18,25 +18,25 @@ and passes the connection on to the real driver (PostgreSQL, MySQL, MariaDB, Aur
 ## Quick start
 
 Download the jar from the [releases](../../releases) or [Maven Central](https://central.sonatype.com/artifact/br.com.juantoledo/vault-jdbc),
-or build it with `mvn package` (`target/vault-jdbc-0.1.1.jar`). As a dependency:
+or build it with `mvn package` (`target/vault-jdbc-0.2.0.jar`). As a dependency:
 
 ```xml
 <dependency>
     <groupId>br.com.juantoledo</groupId>
     <artifactId>vault-jdbc</artifactId>
-    <version>0.1.1</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 
 ```kotlin
-runtimeOnly("br.com.juantoledo:vault-jdbc:0.1.1")
+runtimeOnly("br.com.juantoledo:vault-jdbc:0.2.0")
 ```
 
 Create a generic JDBC connection in your client:
 
 | Setting | Value |
 |---|---|
-| Driver jar | `vault-jdbc-0.1.1.jar` |
+| Driver jar | `vault-jdbc-0.2.0.jar` |
 | Driver class | `br.com.juantoledo.vaultjdbc.VaultDriver` |
 | User / password | empty |
 | URL | `jdbc:vault:` + your usual JDBC URL without `jdbc:`, plus `vault.*` parameters |
